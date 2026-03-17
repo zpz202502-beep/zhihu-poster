@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-知乎文章自动发布 - 反检测版本
+知乎文章自动发布 - 移动端版本
 """
 
 import os
@@ -44,45 +44,6 @@ def load_article():
         return title, '\n'.join(body)
     return None, None
 
-def stealth_context(browser):
-    """创建反检测context"""
-    context = browser.new_context(
-        viewport={'width': 1920, 'height': 1080},
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        locale='zh-CN',
-        timezone_id='Asia/Shanghai',
-        permissions=['geolocation', 'notifications']
-    )
-    
-    # 反检测脚本
-    context.add_init_script("""
-        // 隐藏webdriver
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        
-        // 模拟真实浏览器
-        window.navigator.chrome = { runtime: {} };
-        
-        // 修改permissions
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) => (
-            parameters.name === 'notifications' ?
-                Promise.resolve({ state: Notification.permission }) :
-                originalQuery(parameters)
-        );
-        
-        // 模拟插件
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5]
-        });
-        
-        // 模拟languages
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['zh-CN', 'zh', 'en']
-        });
-    """)
-    
-    return context
-
 def post_article(browser):
     title, content = load_article()
     if not title or not content:
@@ -91,13 +52,24 @@ def post_article(browser):
     
     print(f"发布: {title}")
     
-    context = stealth_context(browser)
+    # 使用移动端UA
+    context = browser.new_context(
+        viewport={'width': 375, 'height': 812},
+        user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+        device_scale_factor=3,
+        is_mobile=True,
+        has_touch=True
+    )
+    
     page = context.new_page()
     
-    # 分阶段访问，建立会话
-    print("1. 访问知乎...")
-    page.goto("https://www.zhihu.com/", timeout=60000)
-    time.sleep(5)
+    # 尝试移动端登录
+    print("1. 访问知乎移动端...")
+    try:
+        page.goto("https://www.zhihu.com/", timeout=30000)
+        time.sleep(5)
+    except Exception as e:
+        print(f"访问失败: {e}")
     
     # 设置cookie
     print("2. 设置Cookie...")
@@ -114,80 +86,52 @@ def post_article(browser):
     
     time.sleep(3)
     
-    print("3. 检查页面...")
-    page_url = page.url
-    print(f"   当前URL: {page_url}")
-    print(f"   页面标题: {page.title()}")
-    
-    # 如果需要验证
-    if "安全验证" in page.title():
-        print("⚠️ 需要验证码，等待中...")
-        time.sleep(10)
-        
-        # 再试一次
-        page.reload()
-        time.sleep(5)
-        
-        if "安全验证" in page.title():
-            print("❌ 验证码未通过")
-            context.close()
-            return False
-    
-    # 访问创作中心
-    print("4. 访问创作中心...")
-    try:
-        page.goto("https://creator.zhihu.com/", timeout=60000)
-        time.sleep(5)
-    except:
-        pass
-    
-    print(f"   页面: {page.title()}")
+    print(f"页面: {page.title()}")
     
     # 尝试发布
-    print("5. 尝试发布...")
+    print("3. 查找发布入口...")
     try:
+        # 移动端可能入口不同
         page.click('text=写文章', timeout=5000)
     except:
-        pass
+        try:
+            page.click('text=发布', timeout=5000)
+        except:
+            print("未找到发布入口")
     
     time.sleep(3)
     
-    # 输入
-    print("6. 输入内容...")
+    # 输入内容
+    print("4. 输入内容...")
     try:
-        page.fill('input[placeholder*="标题"]', title)
+        # 移动端选择器
+        page.fill('input[type="text"]', title)
     except:
-        try:
-            page.locator('div[contenteditable="true"]').first.click()
-            page.keyboard.type(title, delay=50)
-        except:
-            pass
-    
-    time.sleep(1)
+        pass
     
     try:
-        page.locator('div[contenteditable="true"]').last.fill(content)
+        page.locator('div[contenteditable="true"]').first.fill(content)
     except:
         pass
     
     time.sleep(2)
     
     # 发布
-    print("7. 发布...")
+    print("5. 发布...")
     try:
-        page.click('button:has-text("发布")', timeout=10000)
+        page.click('button:has-text("发布")', timeout=5000)
         time.sleep(5)
-        print("✅ 发布成功!")
+        print("✅ 成功!")
         context.close()
         return True
     except Exception as e:
-        print(f"❌ 发布失败: {e}")
+        print(f"❌ 失败: {e}")
         context.close()
         return False
 
 def main():
     print("=" * 50)
-    print("知乎自动发布工具 - 反检测版")
+    print("知乎发布 - 移动端版")
     print("=" * 50)
     
     if not ZHIHOU_COOKIES:
@@ -199,19 +143,10 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
-                '--no-sandbox'
-            ]
+            args=['--disable-blink-features=AutomationControlled']
         )
         result = post_article(browser)
         browser.close()
-        
-        if result:
-            print("\n🎉 任务完成!")
-        else:
-            print("\n⚠️ 任务未完成")
 
 if __name__ == "__main__":
     main()
