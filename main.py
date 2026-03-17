@@ -11,7 +11,36 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 # 从环境变量读取Cookie
-ZHIHOU_COOKIES = json.loads(os.environ.get('ZHIHOU_COOKIES', '[]'))
+COOKIE_STRING = os.environ.get('ZHIHOU_COOKIES', '')
+
+def parse_cookies(cookie_string):
+    """解析cookie字符串为playwright需要的格式"""
+    if not cookie_string:
+        return []
+    
+    cookies = []
+    # 尝试解析JSON格式
+    try:
+        parsed = json.loads(cookie_string)
+        if isinstance(parsed, list):
+            return parsed
+    except:
+        pass
+    
+    # 解析 name=value; 格式
+    for item in cookie_string.split(';'):
+        item = item.strip()
+        if '=' in item:
+            name, value = item.split('=', 1)
+            cookies.append({
+                'name': name.strip(),
+                'value': value.strip(),
+                'domain': '.zhihu.com',
+                'path': '/'
+            })
+    return cookies
+
+ZHIHOU_COOKIES = parse_cookies(COOKIE_STRING)
 
 # 读取文章内容
 ARTICLE_FILE = Path(__file__).parent / "article.md"
@@ -103,6 +132,8 @@ def main():
     if not ZHIHOU_COOKIES:
         print("❌ 请设置 ZHIHOU_COOKIES 环境变量")
         return
+    
+    print(f"✅ 已加载 {len(ZHIHOU_COOKIES)} 个Cookie")
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
