@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-知乎文章自动发布脚本
-从 article.md 读取内容并发布到知乎
+知乎文章自动发布脚本 - 优化版
 """
 
 import os
@@ -10,21 +9,16 @@ import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-# 从环境变量读取Cookie
 COOKIE_STRING = os.environ.get('ZHIHOU_COOKIES', '')
 
 def parse_cookies(cookie_string):
-    """解析cookie字符串为playwright需要的格式"""
     if not cookie_string:
         return []
     
     cookies = []
-    
-    # 方法1: 尝试解析JSON格式
     try:
         parsed = json.loads(cookie_string)
         if isinstance(parsed, list):
-            # 检查是否已有url/domain
             for c in parsed:
                 if 'url' not in c and 'domain' not in c:
                     c['domain'] = '.zhihu.com'
@@ -33,7 +27,6 @@ def parse_cookies(cookie_string):
     except:
         pass
     
-    # 方法2: 解析 name=value; 格式
     for item in cookie_string.split(';'):
         item = item.strip()
         if '=' in item:
@@ -46,16 +39,12 @@ def parse_cookies(cookie_string):
                 'secure': True,
                 'httpOnly': False
             })
-    
     return cookies
 
 ZHIHOU_COOKIES = parse_cookies(COOKIE_STRING)
-
-# 读取文章内容
 ARTICLE_FILE = Path(__file__).parent / "article.md"
 
 def load_article():
-    """从markdown文件加载文章"""
     if ARTICLE_FILE.exists():
         content = ARTICLE_FILE.read_text(encoding='utf-8')
         lines = content.strip().split('\n')
@@ -70,7 +59,6 @@ def load_article():
     return None, None
 
 def post_article(browser):
-    """发布文章到知乎"""
     title, content = load_article()
     
     if not title or not content:
@@ -79,73 +67,96 @@ def post_article(browser):
     
     print(f"发布: {title}")
     
-    # 先导航到知乎，让浏览器自动设置正确的域名
-    context = browser.new_context(viewport={'width': 1920, 'height': 1080})
+    context = browser.new_context(
+        viewport={'width': 1920, 'height': 1080},
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    )
     page = context.new_page()
     
-    # 先访问知乎首页，让domain正确设置
-    page.goto("https://www.zhihu.com")
-    time.sleep(2)
+    # 先访问知乎
+    print("访问知乎...")
+    page.goto("https://www.zhihu.com", timeout=60000)
+    time.sleep(5)
     
-    # 添加cookie到正确的context
+    # 添加cookie
     for cookie in ZHIHOU_COOKIES:
-        # 移除可能导致问题的字段
-        clean_cookie = {
-            'name': cookie['name'],
-            'value': cookie['value'],
-            'domain': cookie.get('domain', '.zhihu.com'),
-            'path': cookie.get('path', '/')
-        }
         try:
-            context.add_cookies([clean_cookie])
-        except Exception as e:
-            print(f"添加cookie失败: {cookie['name']}: {e}")
+            context.add_cookies([{
+                'name': cookie['name'],
+                'value': cookie['value'],
+                'domain': cookie.get('domain', '.zhihu.com'),
+                'path': cookie.get('path', '/')
+            }])
+        except:
+            pass
     
-    time.sleep(1)
-    
-    # 1. 打开创作中心
-    print("打开创作中心...")
-    page.goto("https://www.zhihu.com/creator/content-management/article")
     time.sleep(3)
     
-    # 2. 点击发布按钮
-    print("点击发布...")
+    # 检查是否已登录
+    page.goto("https://www.zhihu.com/creator/content-management/article", timeout=60000)
+    time.sleep(5)
+    
+    # 打印页面标题用于调试
+    print(f"页面标题: {page.title()}")
+    
+    # 尝试多种选择器
     try:
-        page.click('button:has-text("发布文章")', timeout=5000)
+        # 尝试点击发布按钮
+        print("查找发布按钮...")
+        page.click('button:has-text("发布文章")', timeout=10000)
+    except Exception as e:
+        print(f"点击发布按钮失败: {e}")
+        # 保存截图用于调试
+        page.screenshot(path='/tmp/zhihu_debug.png')
+        print("已保存截图到 /tmp/zhihu_debug.png")
+        context.close()
+        return
+    
+    time.sleep(3)
+    
+    # 输入标题 - 尝试多种选择器
+    print("输入标题...")
+    try:
+        page.fill('input[name="title"]', title, timeout=5000)
     except:
-        pass
+        try:
+            page.fill('input[placeholder*="标题"]', title, timeout=5000)
+        except:
+            page.locator('div[contenteditable="true"]').first.click()
+            time.sleep(1)
+    
+    # 输入正文
+    print("输入正文...")
+    try:
+        page.locator('div[contenteditable="true"]').first.fill(content)
+    except Exception as e:
+        print(f"输入正文失败: {e}")
+    
     time.sleep(2)
     
-    # 3. 输入标题
-    print("输入标题...")
-    page.fill('input[name="title"]', title)
-    
-    # 4. 输入正文
-    print("输入正文...")
-    content_box = page.locator('div[contenteditable="true"]').first
-    content_box.click()
-    content_box.fill(content)
-    time.sleep(1)
-    
-    # 5. 添加话题标签
+    # 添加话题
     print("添加话题...")
     topics = ["素颜霜推荐", "身体素颜霜", "宫芙", "美白", "护肤分享", "好物测评"]
     for topic in topics:
         try:
-            page.click('input[placeholder="搜索话题"]')
-            page.fill('input[placeholder="搜索话题"]', topic)
+            page.click('input[placeholder*="话题"]')
+            page.fill('input[placeholder*="话题"]', topic)
             time.sleep(0.5)
-            page.click(f'div:has-text("{topic}")', timeout=1500)
+            page.click(f'div:has-text("{topic}")', timeout=2000)
             print(f"  + {topic}")
         except:
             pass
     
-    # 6. 发布
+    # 发布
     print("提交发布...")
-    page.click('button:has-text("发布")')
-    time.sleep(5)
+    try:
+        page.click('button:has-text("发布")', timeout=5000)
+        time.sleep(3)
+        print("发布成功!")
+    except Exception as e:
+        print(f"发布失败: {e}")
+        page.screenshot(path='/tmp/zhihu_publish.png')
     
-    print("发布成功!")
     context.close()
 
 def main():
