@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-知乎文章自动发布脚本 - 最终版
+知乎文章自动发布 - 反检测版本
 """
 
 import os
@@ -14,15 +14,13 @@ COOKIE_STRING = os.environ.get('ZHIHOU_COOKIES', '')
 def parse_cookies(cookie_string):
     if not cookie_string:
         return []
-    
-    cookies = []
     try:
         parsed = json.loads(cookie_string)
         if isinstance(parsed, list):
             return parsed
     except:
         pass
-    
+    cookies = []
     for item in cookie_string.split(';'):
         item = item.strip()
         if '=' in item:
@@ -37,49 +35,72 @@ def load_article():
     if ARTICLE_FILE.exists():
         content = ARTICLE_FILE.read_text(encoding='utf-8')
         lines = content.strip().split('\n')
-        title = ""
-        body_lines = []
+        title, body = "", []
         for line in lines:
             if line.startswith('# ') and not title:
                 title = line[2:].strip()
             elif title:
-                body_lines.append(line)
-        return title, '\n'.join(body_lines)
+                body.append(line)
+        return title, '\n'.join(body)
     return None, None
 
-def post_article(browser):
-    title, content = load_article()
-    
-    if not title or not content:
-        print("未找到文章内容")
-        return False
-    
-    print(f"发布: {title}")
-    
+def stealth_context(browser):
+    """创建反检测context"""
     context = browser.new_context(
         viewport={'width': 1920, 'height': 1080},
         user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         locale='zh-CN',
-        timezone_id='Asia/Shanghai'
+        timezone_id='Asia/Shanghai',
+        permissions=['geolocation', 'notifications']
     )
     
-    page = context.new_page()
-    
-    # 设置额外的浏览器属性来绕过检测
-    page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined
+    # 反检测脚本
+    context.add_init_script("""
+        // 隐藏webdriver
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        
+        // 模拟真实浏览器
+        window.navigator.chrome = { runtime: {} };
+        
+        // 修改permissions
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+        );
+        
+        // 模拟插件
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5]
+        });
+        
+        // 模拟languages
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['zh-CN', 'zh', 'en']
         });
     """)
     
-    # 1. 先访问知乎首页
-    print("访问知乎首页...")
-    page.goto("https://www.zhihu.com/", timeout=60000)
-    page.wait_for_load_state('networkidle', timeout=30000)
-    time.sleep(3)
+    return context
+
+def post_article(browser):
+    title, content = load_article()
+    if not title or not content:
+        print("未找到文章")
+        return False
     
-    # 2. 添加Cookie
-    print("设置Cookie...")
+    print(f"发布: {title}")
+    
+    context = stealth_context(browser)
+    page = context.new_page()
+    
+    # 分阶段访问，建立会话
+    print("1. 访问知乎...")
+    page.goto("https://www.zhihu.com/", timeout=60000)
+    time.sleep(5)
+    
+    # 设置cookie
+    print("2. 设置Cookie...")
     for cookie in ZHIHOU_COOKIES:
         try:
             context.add_cookies([{
@@ -91,86 +112,82 @@ def post_article(browser):
         except:
             pass
     
-    time.sleep(2)
-    
-    # 3. 刷新页面
-    print("刷新页面...")
-    page.reload()
-    page.wait_for_load_state('networkidle', timeout=30000)
     time.sleep(3)
     
-    # 4. 检查登录状态
-    print(f"当前页面: {page.title()}")
+    print("3. 检查页面...")
+    page_url = page.url
+    print(f"   当前URL: {page_url}")
+    print(f"   页面标题: {page.title()}")
     
-    # 5. 尝试访问创作中心
-    print("访问创作中心...")
-    page.goto("https://creator.zhihu.com/", timeout=60000)
-    page.wait_for_load_state('networkidle', timeout=30000)
-    time.sleep(3)
+    # 如果需要验证
+    if "安全验证" in page.title():
+        print("⚠️ 需要验证码，等待中...")
+        time.sleep(10)
+        
+        # 再试一次
+        page.reload()
+        time.sleep(5)
+        
+        if "安全验证" in page.title():
+            print("❌ 验证码未通过")
+            context.close()
+            return False
     
-    print(f"创作中心页面: {page.title()}")
+    # 访问创作中心
+    print("4. 访问创作中心...")
+    try:
+        page.goto("https://creator.zhihu.com/", timeout=60000)
+        time.sleep(5)
+    except:
+        pass
     
-    # 6. 尝试多种方式找到发布按钮
-    print("查找发布入口...")
+    print(f"   页面: {page.title()}")
     
-    # 尝试点击"写文章"
+    # 尝试发布
+    print("5. 尝试发布...")
     try:
         page.click('text=写文章', timeout=5000)
-        print("找到写文章按钮")
+    except:
+        pass
+    
+    time.sleep(3)
+    
+    # 输入
+    print("6. 输入内容...")
+    try:
+        page.fill('input[placeholder*="标题"]', title)
+    except:
+        try:
+            page.locator('div[contenteditable="true"]').first.click()
+            page.keyboard.type(title, delay=50)
+        except:
+            pass
+    
+    time.sleep(1)
+    
+    try:
+        page.locator('div[contenteditable="true"]').last.fill(content)
     except:
         pass
     
     time.sleep(2)
     
-    # 7. 输入标题
-    print("输入标题...")
+    # 发布
+    print("7. 发布...")
     try:
-        # 尝试多种选择器
-        selectors = [
-            'input[placeholder*="标题"]',
-            'input[class*="title"]',
-            'div[contenteditable="true"]'
-        ]
-        for sel in selectors:
-            try:
-                page.fill(sel, title, timeout=3000)
-                print(f"使用选择器 {sel} 成功")
-                break
-            except:
-                continue
-    except Exception as e:
-        print(f"输入标题失败: {e}")
-    
-    time.sleep(1)
-    
-    # 8. 输入正文
-    print("输入正文...")
-    try:
-        page.locator('div[contenteditable="true"]').first.fill(content)
-    except Exception as e:
-        print(f"输入正文失败: {e}")
-    
-    time.sleep(2)
-    
-    # 9. 发布
-    print("提交发布...")
-    try:
-        page.click('button:has-text("发布"):not([disabled])', timeout=10000)
+        page.click('button:has-text("发布")', timeout=10000)
         time.sleep(5)
-        print("发布完成!")
+        print("✅ 发布成功!")
         context.close()
         return True
     except Exception as e:
-        print(f"发布失败: {e}")
-        # 保存页面用于调试
-        page.screenshot(path='/tmp/debug.png')
-        print("已保存截图")
+        print(f"❌ 发布失败: {e}")
         context.close()
         return False
 
 def main():
     print("=" * 50)
-    print("知乎自动发布工具")
+    print("知乎自动发布工具 - 反检测版")
     print("=" * 50)
     
     if not ZHIHOU_COOKIES:
@@ -182,19 +199,19 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=['--disable-blink-features=AutomationControlled']
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox'
+            ]
         )
-        success = post_article(browser)
+        result = post_article(browser)
         browser.close()
         
-        if success:
-            print("=" * 50)
-            print("🎉 发布成功!")
-            print("=" * 50)
+        if result:
+            print("\n🎉 任务完成!")
         else:
-            print("=" * 50)
-            print("❌ 发布失败，请检查")
-            print("=" * 50)
+            print("\n⚠️ 任务未完成")
 
 if __name__ == "__main__":
     main()
