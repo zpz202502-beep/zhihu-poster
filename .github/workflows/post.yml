@@ -1,0 +1,34 @@
+name: 知乎自动发布
+
+on:
+  # 每天早上9点自动执行
+  schedule:
+    - cron: '0 1 * * *'
+  # 也可以手动触发
+  workflow_dispatch:
+  # 推送时执行（测试用）
+  push:
+    paths:
+      - 'article.md'
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: 发布到知乎
+        env:
+          ZHIHOU_COOKIES: ${{ secrets.ZHIHOU_COOKIES }}
+        run: python main.py
